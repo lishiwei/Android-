@@ -1,4 +1,4 @@
- 从下面代码看起
+从下面代码看起
         
         Observable.create(new ObservableOnSubscribe<Integer>() {
             @Override

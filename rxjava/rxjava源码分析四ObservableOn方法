@@ -1,0 +1,248 @@
+  接下来继续看下面的代码
+     
+     Observable.create(new ObservableOnSubscribe<String>() {
+                @Override
+                public void subscribe(ObservableEmitter<String> emitter) throws Exception {
+                    emitter.onNext("1");
+                }
+            }).observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(new Consumer<String>() {
+                        @Override
+                        public void accept(String integer) throws Exception {
+    
+                        }
+                    });
+                    
+    public final Observable<T> observeOn(Scheduler scheduler, boolean delayError, int bufferSize) {
+            ObjectHelper.requireNonNull(scheduler, "scheduler is null");
+            ObjectHelper.verifyPositive(bufferSize, "bufferSize");
+            return RxJavaPlugins.onAssembly(new ObservableObserveOn<T>(this, scheduler, delayError, bufferSize));
+        }
+                        
+  在这个方法中生成了ObservableObserveOn类对象并吧schedule参数传进去，接着看它的subscribeActual方法
+     
+      protected void subscribeActual(Observer<? super T> observer) {
+             if (scheduler instanceof TrampolineScheduler) {
+                 source.subscribe(observer);
+             } else {
+                 Scheduler.Worker w = scheduler.createWorker();
+     
+                 source.subscribe(new ObserveOnObserver<T>(observer, w, delayError, bufferSize));
+             }
+         }
+         
+         此处生成一个Scheduler.Worker 对象W 通过scheduler.createWorker(); 方法
+         
+  此处的schedule是AndroidSchedule的mainSchedule对象。我们进去看看
+ 
+     public static Scheduler mainThread() {
+         return RxAndroidPlugins.onMainThreadScheduler(MAIN_THREAD);
+     }
+     
+  这个方法生成了MainThreadSchedule
+  看下
+    
+     private static final Scheduler MAIN_THREAD = RxAndroidPlugins.initMainThreadScheduler(
+                 new Callable<Scheduler>() {
+                     @Override public Scheduler call() throws Exception {
+                         return MainHolder.DEFAULT;
+                     }
+                 });
+                 
+     public static Scheduler initMainThreadScheduler(Callable<Scheduler> scheduler) {
+                         if (scheduler == null) {
+                             throw new NullPointerException("scheduler == null");
+                         }
+                         Function<Callable<Scheduler>, Scheduler> f = onInitMainThreadHandler;
+                         if (f == null) {
+                             return callRequireNonNull(scheduler);
+                         }
+                         return applyRequireNonNull(f, scheduler);
+                     }
+                     
+     static Scheduler callRequireNonNull(Callable<Scheduler> s) {
+                             try {
+                                 Scheduler scheduler = s.call();
+                                 if (scheduler == null) {
+                                     throw new NullPointerException("Scheduler Callable returned null");
+                                 }
+                                 return scheduler;
+                             } catch (Throwable ex) {
+                                 throw Exceptions.propagate(ex);
+                             }
+                         }
+                         
+  以上三个方法生成一个MainHolder.DEFAULT
+  接下来看下
+  
+      private static final class MainHolder {
+              static final Scheduler DEFAULT
+                  = new HandlerScheduler(new Handler(Looper.getMainLooper()), false);
+          }
+          
+  接下来看handlerSchedule类
+    
+        final class HandlerScheduler extends Scheduler {
+        private final Handler handler;
+        private final boolean async;
+   
+        HandlerScheduler(Handler handler, boolean async) {
+           this.handler = handler;
+           this.async = async;
+        }
+       
+   }
+   这个schedule有一个handler，我们在MainHolder.DEFAULT的时候传入的是主线程的handler
+  
+   
+   现在我们回到ObservableObserveOn的createWorker()方法 
+   
+      @Override
+       public Worker createWorker() {
+           return new HandlerWorker(handler, async);
+       }
+      
+       接下来看HandlerWorker
+       private static final class HandlerWorker extends Worker {
+     
+           private final Handler handler;
+           private final boolean async;
+   
+           private volatile boolean disposed;
+   
+           HandlerWorker(Handler handler, boolean async) {
+               this.handler = handler;
+               this.async = async;
+           }
+  此时的handler是HandlerScheduler的主线程handler 此时 W 对象有了    
+  接下来会执行到ObserveOnObserver类的onNext方法，我们进去看下
+     
+       @Override
+             public void onNext(T t) {
+                 if (done) {
+                     return;
+                 }
+     
+                 if (sourceMode != QueueDisposable.ASYNC) {
+                     queue.offer(t);
+                 }
+                 schedule();
+             }   
+       void schedule() {
+                   if (getAndIncrement() == 0) {
+                       worker.schedule(this);
+                   }
+               }
+  接下来走到w对象的schedule方法及HandlerWorker的schedule()方法
+       
+       public Disposable schedule(Runnable run, long delay, TimeUnit unit) {
+                   if (run == null) throw new NullPointerException("run == null");
+                   if (unit == null) throw new NullPointerException("unit == null");
+       
+                   if (disposed) {
+                       return Disposables.disposed();
+                   }
+       
+                   run = RxJavaPlugins.onSchedule(run);
+       
+                   ScheduledRunnable scheduled = new ScheduledRunnable(handler, run);
+       
+                   Message message = Message.obtain(handler, scheduled);
+                   message.obj = this; // Used as token for batch disposal of this worker's runnables.
+       
+                   if (async) {
+                       message.setAsynchronous(true);
+                   }
+       
+                   handler.sendMessageDelayed(message, unit.toMillis(delay));
+       
+                   // Re-check disposed state for removing in case we were racing a call to dispose().
+                   if (disposed) {
+                       handler.removeCallbacks(scheduled);
+                       return Disposables.disposed();
+                   }
+       
+                   return scheduled;
+               }
+               
+               
+  方法中把runnable对象包装在Message中发送到handler消息循环中执行，由此发送到主线程的handler中执行
+  Message的runnable对象是ScheduledRunnable 我们看下
+
+     private static final class ScheduledRunnable implements Runnable, Disposable {
+     
+     ScheduledRunnable(Handler handler, Runnable delegate) {
+                 this.handler = handler;
+                 this.delegate = delegate;
+             }
+             
+       @Override
+        public void run() {
+            try {
+                delegate.run();
+            } catch (Throwable t) {
+                RxJavaPlugins.onError(t);
+            }
+        }
+     }
+  在此类里面代理执行runnable对象,在subscribeActual方法里 ObserveOnObserver 类对象 
+  接下来看下这个类 的run方法
+      
+      
+        @Override
+        public void run() {
+            if (outputFused) {
+                drainFused();
+            } else {
+                drainNormal();
+            }
+        }
+        
+        void drainNormal() {
+                    int missed = 1;
+        
+                    final SimpleQueue<T> q = queue;
+                    final Observer<? super T> a = downstream;
+        
+                    for (;;) {
+                        if (checkTerminated(done, q.isEmpty(), a)) {
+                            return;
+                        }
+        
+                        for (;;) {
+                            boolean d = done;
+                            T v;
+        
+                            try {
+                                v = q.poll();
+                            } catch (Throwable ex) {
+                                Exceptions.throwIfFatal(ex);
+                                disposed = true;
+                                upstream.dispose();
+                                q.clear();
+                                a.onError(ex);
+                                worker.dispose();
+                                return;
+                            }
+                            boolean empty = v == null;
+        
+                            if (checkTerminated(d, empty, a)) {
+                                return;
+                            }
+        
+                            if (empty) {
+                                break;
+                            }
+        
+                            a.onNext(v);
+                        }
+        
+                        missed = addAndGet(-missed);
+                        if (missed == 0) {
+                            break;
+                        }
+                    }
+                }
+   
+   在这个方法里可以看到调用了downstream的onNext方法
+在此observableOn()方法就跟完了。

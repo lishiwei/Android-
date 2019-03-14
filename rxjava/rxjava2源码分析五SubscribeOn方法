@@ -1,0 +1,41 @@
+接下来继续看下面的代码
+     
+     Observable.create(new ObservableOnSubscribe<String>() {
+                @Override
+                public void subscribe(ObservableEmitter<String> emitter) throws Exception {
+                    emitter.onNext("1");
+                }
+            }).subscribeOn(Schedulers.newThread()).observeOn(AndroidSchedulers.mainThread())
+                    .subscribe(new Consumer<String>() {
+                        @Override
+                        public void accept(String integer) throws Exception {
+    
+                        }
+                    });
+                    
+    public final Observable<T> subscribeOn(Scheduler scheduler) {
+                            ObjectHelper.requireNonNull(scheduler, "scheduler is null");
+                            return RxJavaPlugins.onAssembly(new ObservableSubscribeOn<T>(this, scheduler));
+                        }
+                        
+  在这个方法中生成了ObservableSubscribeOn类对象并吧schedule参数传进去，接着看它的subscribeActual方法
+     
+     public void subscribeActual(final Observer<? super T> observer) {
+             final SubscribeOnObserver<T> parent = new SubscribeOnObserver<T>(observer);
+     
+             observer.onSubscribe(parent);
+     
+             parent.setDisposable(scheduler.scheduleDirect(new SubscribeTask(parent)));
+         }
+  在这个方法里面生成了一个SubscribeOnObserver对象并保存为parent变量
+  接着调用Observer的OnSubscribe()方法把parent 强制转换成 diaposable对象执行
+  接下来执行parent的setDisposable方法
+
+     void setDisposable(Disposable d) {
+             DisposableHelper.setOnce(this, d);
+         }
+         
+  我们先看dispose的参数的执行
+  scheduler.scheduleDirect(new SubscribeTask(parent))
+  
+  
