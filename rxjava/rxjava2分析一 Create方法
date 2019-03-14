@@ -1,0 +1,116 @@
+首先从一段代码开始
+
+      Observable.create(new ObservableOnSubscribe<Integer>() {
+                 @Override
+                 public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
+                     emitter.onNext(1);
+                 }
+             }).subscribe(new Consumer<Integer>() {
+                 @Override
+                 public void accept(Integer integer) throws Exception {
+                     
+                 }
+             });
+
+  先看Observable.creat方法
+
+      Observable.create(new ObservableOnSubscribe<Integer>() {
+                         @Override
+                         public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
+                             emitter.onNext(1);
+                         }
+                     });
+  接下来Observabled的静态方法create()
+
+      public static <T> Observable<T> create(ObservableOnSubscribe<T> source) {
+                             ObjectHelper.requireNonNull(source, "source is null");
+                             return RxJavaPlugins.onAssembly(new ObservableCreate<T>(source));
+                         }
+  注意看下ObservableCreate<T>(source)对象 ，继续看RxJavaPlugins.onAssembly方法
+
+      public static <T> Observable<T> onAssembly(@NonNull Observable<T> source) {
+             Function<? super Observable, ? extends Observable> f = onObservableAssembly;
+             if (f != null) {
+                 return apply(f, source);
+             }
+             return source;
+         }
+  接下来看下onObservableAssembly
+          
+      static volatile Function<? super Observable, ? extends Observable> onObservableAssembly;
+          
+            public static void setOnObservableAssembly(@Nullable Function<? super Observable, ? extends Observable> onObservableAssembly) {
+                  if (lockdown) {
+                      throw new IllegalStateException("Plugins can't be changed anymore");
+                  }
+                  RxJavaPlugins.onObservableAssembly = onObservableAssembly;
+              }
+  因为onObservableAssembly如果没有设置就为 null此时没有设置 ，所以这个方法就是返回source参数ObservableCreate对象。
+  现在create方法看完了。接下来看subscribe()方法
+
+      @Override
+       public final void subscribe(Observer<? super T> observer) {
+             ObjectHelper.requireNonNull(observer, "observer is null");
+             try {
+                 observer = RxJavaPlugins.onSubscribe(this, observer); 1
+
+                 ObjectHelper.requireNonNull(observer, "The RxJavaPlugins.onSubscribe hook returned a null Observer. Please change the handler provided to RxJavaPlugins.setOnObservableSubscribe for invalid null returns. Further reading: https://github.com/ReactiveX/RxJava/wiki/Plugins");
+
+                 subscribeActual(observer); 2
+             } catch (NullPointerException e) { // NOPMD
+                 throw e;
+             } catch (Throwable e) {
+                 Exceptions.throwIfFatal(e);
+                 // can't call onError because no way to know if a Disposable has been set or not
+                 // can't call onSubscribe because the call might have set a Subscription already
+                 RxJavaPlugins.onError(e);
+                 NullPointerException npe = new NullPointerException("Actually not, but can't throw other exceptions due to RS");
+                 npe.initCause(e);
+                 throw npe;
+             }
+             }
+  1处是把observer返回
+  接下来看2处
+
+       protected abstract void subscribeActual(Observer<? super T> observer);
+
+  这是抽象方法,子类是刚刚的create()方法的创建的ObservableCreate类
+  接下来看下这类的subscribeActual方法
+
+       protected void subscribeActual(Observer<? super T> observer) {
+                                      CreateEmitter<T> parent = new CreateEmitter<T>(observer);1
+                                      observer.onSubscribe(parent);2
+                              
+                                      try {
+                                          source.subscribe(parent);3
+                                      } catch (Throwable ex) {
+                                          Exceptions.throwIfFatal(ex);
+                                          parent.onError(ex);
+                                      }
+                                  }
+  首先创建了一个CreateEmitter 在rxjava中每个方法几乎都会创建自己的Emitter对象接下来看看这类的声明
+
+       static final class CreateEmitter<T>
+                extends AtomicReference<Disposable>
+                implements ObservableEmitter<T>, Disposable {}
+
+  这个类是ObservableEmitter的子类
+  接下来执行2 即observer的onSubscribe()方法
+  接下来3  即Observerble.Create()方法的参数ObservableOnSubscribe的 subscribe()方法,在此方法中调用了emitter.onNext(1)方法
+   即CreateEmitter的onNext方法，接下来我们看下onNext方法
+
+           @Override
+                    public void onNext(T t) {
+                        if (t == null) {
+                            onError(new NullPointerException("onNext called with null. Null values are generally not allowed in 2.x operators and sources."));
+                            return;
+                        }
+                        if (!isDisposed()) {
+                            observer.onNext(t);
+                        }
+                    }
+
+   在此方法中执行observer的onNext方法和onComplete方法。
+   总结一下，当调用subscribe()方法的时候会调用ObservableCreate的subscribeActual方法 接着调用Observer的Onsubscribe()方法，接着通过CreateEmitter调用onNext和onComplete来调用Observer的onNext和onComplete方法
+   在此 我们的Observable的创建和注册方法解析完成了。
+                        

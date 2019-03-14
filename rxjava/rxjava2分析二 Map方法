@@ -1,0 +1,112 @@
+上篇文字解释了oncreate方法和subscribe方法是怎么运行的   
+接下来看下map方法
+
+    Observable.create(new ObservableOnSubscribe<Integer>() {
+                 @Override
+                 public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
+                     emitter.onNext(1);
+                 }
+             }).map(new Function<Integer, Integer>() {
+                 @Override
+                 public Integer apply(Integer integer) throws Exception {
+                     return integer;
+                 }
+             }).subscribe(new Consumer<Integer>() {
+                 @Override
+                 public void accept(Integer integer) throws Exception {
+                     
+             }
+    });
+ 当调用map的时候会创建一个ObservableMap对象,并以onCreate创建的Observable和Function当参数
+
+
+                public final <R> Observable<R> map(Function<? super T, ? extends R> mapper) {
+                    ObjectHelper.requireNonNull(mapper, "mapper is null");
+                    return RxJavaPlugins.onAssembly(new ObservableMap<T, R>(this, mapper));
+                } 
+ 当后面调用subscribe()方法时会调用ObservableMap的subscribeActual方法接下来看看这方法
+
+    @Override
+    public void subscribeActual(Observer<? super U> t) {
+        source.subscribe(new MapObserver<T, U>(t, function));
+    }
+
+  用Observer 和function创建了一个MapObserver对象
+  接下来看下MapObserver类
+
+    static final class MapObserver<T, U> extends BasicFuseableObserver<T, U>接下来看父类
+    public abstract class BasicFuseableObserver<T, R> implements Observer<T>, QueueDisposable<R> 
+
+   看下这类的构造函数
+
+    public BasicFuseableObserver(Observer<? super R> downstream) {
+                     this.downstream = downstream;
+                 }
+
+   直接把Observer保存到全局变量this.downstream中。
+   接下来看MapObserver的构造函数
+
+    MapObserver(Observer<? super U> actual, Function<? super T, ? extends U> mapper) {
+                                    super(actual);
+                                    this.mapper = mapper;
+                                }
+
+  将Observer设置成downstream，将= mapper设置成this.mapper ;
+  接着回来看subscribeActual方法。
+   直接调用了第一步onCreate方法创建的ObservableCreate对象的 subscribe方法
+   在第一篇文章中我们看到了ObservableCreate对象的subscribe的流程,会先调用Observer的onSubscribe和onNext和onComplete方法
+   在此处会先调用mapObserver的onSubscribe和onNext和onComplete方法，
+在mapObserver的父类中可以看到onSubscribe onComplete 直接调用了downstream的onSubscribe onComplete方法
+
+    public final void onSubscribe(Disposable d) {
+        if (DisposableHelper.validate(this.upstream, d)) {
+
+            this.upstream = d;
+            if (d instanceof QueueDisposable) {
+                this.qd = (QueueDisposable<T>)d;
+            }
+
+            if (beforeDownstream()) {
+
+                downstream.onSubscribe(this);
+
+                afterDownstream();
+            }
+        }
+     }
+
+      public void onComplete() {
+          if (done) {
+              return;
+          }
+          done = true;
+          downstream.onComplete();
+      }
+ 接下来重点看下MapObserver 的 onNext方法
+
+              public void onNext(T t) {
+                  if (done) {
+                      return;
+                  }
+
+                  if (sourceMode != NONE) {
+                      downstream.onNext(null);
+                      return;
+                  }
+
+                  U v;
+
+           （1）       try {
+                      v = ObjectHelper.requireNonNull(mapper.apply(t), "The mapper function returned a null value.");
+                  } catch (Throwable ex) {
+                      fail(ex);
+                      return;
+                  }
+                  downstream.onNext(v);
+              }
+
+ 直接看（1）处先 先调用函数把入参T转换成返回值U  然后调用Downstream的onNext(v)方法，把Map方法的结果传给Observer的onNext
+ 在此Map方法就跟结束了。
+ 接下来总结下。
+ map方法先根据onCreate创建的Obsevable对象 创建一个ObservableMap对象   当调用ObservableMap的Subscribe()方法时，创建了一个MapObserver对象 做参数 调用onCreate创建的Obsevable对象的Subscribe()方法
+ 在MapObserver的onNext方法中先调用map发Function求出结果，在传给Observer的onNext方法

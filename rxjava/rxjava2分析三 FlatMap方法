@@ -1,0 +1,224 @@
+ 从下面代码看起
+        
+        Observable.create(new ObservableOnSubscribe<Integer>() {
+            @Override
+            public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
+                emitter.onNext(1);
+            }
+        }).flatMap(new Function<Integer, ObservableSource<String>>() {
+            @Override
+            public ObservableSource<String> apply(Integer integer) throws Exception {
+                return Observable.create(new ObservableOnSubscribe<String>() {
+                    @Override
+                    public void subscribe(ObservableEmitter<String> emitter) throws Exception {
+                        
+                    }
+                });
+            }
+        }).subscribe(new Consumer<String>() {
+            @Override
+            public void accept(String integer) throws Exception {
+
+            }
+        });
+      
+ flatMap方法接收一个Observable并返回 另一个Observable ，接下来看下源码
+        
+        public final <R> Observable<R> flatMap(Function<? super T, ? extends ObservableSource<? extends R>> mapper) {
+                return flatMap(mapper, false);
+            }
+        
+        public final <R> Observable<R> flatMap(Function<? super T, ? extends ObservableSource<? extends R>> mapper, boolean delayErrors) {
+                return flatMap(mapper, delayErrors, Integer.MAX_VALUE);
+            }
+            
+        public final <R> Observable<R> flatMap(Function<? super T, ? extends ObservableSource<? extends R>> mapper, boolean delayErrors, int maxConcurrency) {
+                return flatMap(mapper, delayErrors, maxConcurrency, bufferSize());
+            }
+          
+          public final <R> Observable<R> flatMap(Function<? super T, ? extends ObservableSource<? extends R>> mapper,
+                     boolean delayErrors, int maxConcurrency, int bufferSize) {
+                 ObjectHelper.requireNonNull(mapper, "mapper is null");
+                 ObjectHelper.verifyPositive(maxConcurrency, "maxConcurrency");
+                 ObjectHelper.verifyPositive(bufferSize, "bufferSize");
+                 if (this instanceof ScalarCallable) {
+                     @SuppressWarnings("unchecked")
+                     T v = ((ScalarCallable<T>)this).call();
+                     if (v == null) {
+                         return empty();
+                     }
+                     return ObservableScalarXMap.scalarXMap(v, mapper);
+                 }
+                 return RxJavaPlugins.onAssembly(new ObservableFlatMap<T, R>(this, mapper, delayErrors, maxConcurrency, bufferSize));
+             }
+ 代码跟到上面的方法中,前面三行是检测参数的 接着新建了一个ObservableFlatMap对象,按照之前的套路看下subscribeActual()方法
+    
+       @Override
+        public void subscribeActual(Observer<? super U> t) {
+    
+            if (ObservableScalarXMap.tryScalarXMapSubscribe(source, t, mapper)) {
+                return;
+            }
+    
+            source.subscribe(new MergeObserver<T, U>(t, mapper, delayErrors, maxConcurrency, bufferSize));
+        }
+      
+ 跟map方法一样创建了一个MergeObserver对象当参数并 调用了前一个Obserable的subscribe()方法，接下来看下MergeObserver类
+    
+         static final class MergeObserver<T, U> extends AtomicInteger implements Disposable, Observer<T>{
+         
+                 MergeObserver(Observer<? super U> actual, Function<? super T, ? extends ObservableSource<? extends U>> mapper,
+                         boolean delayErrors, int maxConcurrency, int bufferSize) {
+                     this.downstream = actual;
+                     this.mapper = mapper;
+                     this.delayErrors = delayErrors;
+                     this.maxConcurrency = maxConcurrency;
+                     this.bufferSize = bufferSize;
+                     if (maxConcurrency != Integer.MAX_VALUE) {
+                         sources = new ArrayDeque<ObservableSource<? extends U>>(maxConcurrency);
+                     }
+                     this.observers = new AtomicReference<InnerObserver<?, ?>[]>(EMPTY);
+                 }
+                
+         }
+        
+ 构造方法如上把变量保存下来，接下来 onSubscribe()直接调用downstream的onSubscribe()方法，即通过Observable.Create()方法创建的Observable的onSubscribe()方法
+        
+         @Override
+           public void onSubscribe(Disposable d) {
+               if (DisposableHelper.validate(this.upstream, d)) {
+                   this.upstream = d;
+                   downstream.onSubscribe(this);
+               }
+           }
+ 接下来看onNext方法
+ 
+           @Override
+                  public void onNext(T t) {
+                      // safeguard against misbehaving sources
+                      if (done) {
+                          return;
+                      }
+                      ObservableSource<? extends U> p;
+                      try {
+                          p = ObjectHelper.requireNonNull(mapper.apply(t), "The mapper returned a null ObservableSource");
+                      } catch (Throwable e) {
+                          Exceptions.throwIfFatal(e);
+                          upstream.dispose();
+                          onError(e);
+                          return;
+                      }
+          
+                      if (maxConcurrency != Integer.MAX_VALUE) {
+                          synchronized (this) {
+                              if (wip == maxConcurrency) {
+                                  sources.offer(p);
+                                  return;
+                              }
+                              wip++;
+                          }
+                      }
+          
+                      subscribeInner(p);
+                  }
+ 先通过FlatMap方法把Observable得到传给subscribeInner(p)方法，接下来看这方法      
+              
+           @SuppressWarnings("unchecked")
+                    void subscribeInner(ObservableSource<? extends U> p) {
+                        for (;;) {
+                            if (p instanceof Callable) {
+                                if (tryEmitScalar(((Callable<? extends U>)p)) && maxConcurrency != Integer.MAX_VALUE) {
+                                    boolean empty = false;
+                                    synchronized (this) {
+                                        p = sources.poll();
+                                        if (p == null) {
+                                            wip--;
+                                            empty = true;
+                                        }
+                                    }
+                                    if (empty) {
+                                        drain();
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                InnerObserver<T, U> inner = new InnerObserver<T, U>(this, uniqueId++);
+                                if (addInner(inner)) {
+                                    p.subscribe(inner);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    
+                    
+ 接着调用p.subscribe(inner)方法 第一个if判断Observable是不是异步的callable,在这里不是，这是为了适配与网络访问相结合的Observable
+ 跳过这if语句 看下面的生产了一个InnerObserver 并加到换成的observers里面，如果成功就直接调用Observable的subscribe()方法
+ 接下来看下InnerObserver的onNext方法
+            
+           @Override
+                   public void onNext(U t) {
+                       if (fusionMode == QueueDisposable.NONE) {
+                           parent.tryEmit(t, this);
+                       } else {
+                           parent.drain();
+                       }
+                   }
+  
+ 接下来调用 MergeObserver的drain方法   
+   
+            void drain() {
+                      if (getAndIncrement() == 0) {
+                          drainLoop();
+                      }
+                  }      
+            void drainLoop() {
+                        final Observer<? super U> child = this.downstream;
+                        int missed = 1;
+                        for (;;) {
+                            if (checkTerminate()) {
+                                return;
+                            }
+                            SimplePlainQueue<U> svq = queue;
+            
+                            if (svq != null) {
+                                for (;;) {
+                                    if (checkTerminate()) {
+                                        return;
+                                    }
+            
+                                    U o = svq.poll();
+            
+                                    if (o == null) {
+                                        break;
+                                    }
+            
+                                    child.onNext(o);
+                                }
+                            }
+                            .......
+             }
+             
+ 在这方法中省略后面的部分。意思就是在背压的情况下的处理
+ 看下这段先把给child变量赋值
+ child = this.downstream;
+ 接下来调用child.onNext即downStream的onNext方法，即原始Observer的onNext 方法
+ 总结一下
+ 
+         flatMap -> 
+         ObservableFlatMap.subscribeActual -> 
+         source.subscribe(new MergeObserver<T, U>(t, mapper, delayErrors, maxConcurrency, bufferSize)) -> 
+         {
+           p = ObjectHelper.requireNonNull(mapper.apply(t), "The mapper returned a null ObservableSource")
+           subscribeInner(p)
+           
+         }->
+         p.subscribe(inner)->
+         InnerObserver->onNext()->
+         MergeObserver.drain()->
+         MergeObserver.drainLoop->
+         Observer.onNext()
+         Observer.onComplete()
+ 到处结束
