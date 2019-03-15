@@ -78,15 +78,15 @@
   接下来看下这类的subscribeActual方法
 
        protected void subscribeActual(Observer<? super T> observer) {
-                                      CreateEmitter<T> parent = new CreateEmitter<T>(observer);1
-                                      observer.onSubscribe(parent);2
-                              
-                                      try {
-                                          source.subscribe(parent);3
-                                      } catch (Throwable ex) {
-                                          Exceptions.throwIfFatal(ex);
-                                          parent.onError(ex);
-                                      }
+                      CreateEmitter<T> parent = new CreateEmitter<T>(observer);1
+                      observer.onSubscribe(parent);2
+              
+                      try {
+                          source.subscribe(parent);3
+                      } catch (Throwable ex) {
+                          Exceptions.throwIfFatal(ex);
+                          parent.onError(ex);
+                      }
                                   }
   首先创建了一个CreateEmitter 在rxjava中每个方法几乎都会创建自己的Emitter对象接下来看看这类的声明
 
